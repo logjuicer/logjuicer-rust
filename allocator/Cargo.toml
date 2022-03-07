@@ -1,0 +1,22 @@
+[package]
+name = "logreduce-allocator"
+version = "0.1.0"
+
+license = "Apache-2.0"
+repository = "https://github.com/logreduce/logreduce-rust"
+authors = ["TristanCacqueray"]
+
+description = "A tracing allocator to measure the maximum resident memory used."
+edition = "2018"
+
+[lib]
+name = "logreduce_allocator"
+path = "src/allocator.rs"
+
+[[bin]]
+name = "bench-memory"
+path = "src/bench-memory.rs"
+
+[dependencies]
+bytesize = "1"
+logreduce-iterator = { path = "../iterator" }
