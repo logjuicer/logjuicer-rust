@@ -6,10 +6,12 @@
 //! This module dispatch the abstract Content and Source to their implementationm e.g. the files module.
 
 use anyhow::{Context, Result};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
+use tracing::info;
 use url::Url;
 
 pub mod files;
@@ -42,11 +44,30 @@ pub enum Content {
     Zuul(Box<zuul::Build>),
 }
 
+impl std::fmt::Display for Content {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Content::File(src) => write!(f, "File({})", src),
+            Content::Directory(src) => write!(f, "Directory({})", src),
+            Content::Zuul(build) => write!(f, "Zuul({})", build),
+        }
+    }
+}
+
 /// The location of the log lines, and the relative prefix length.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Source {
     Local(usize, PathBuf),
     Remote(usize, url::Url),
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Local(_, _) => write!(f, "local: {}", self.get_relative()),
+            Source::Remote(_, _) => write!(f, "remote: {}", self.get_relative()),
+        }
+    }
 }
 
 impl Source {
@@ -65,7 +86,9 @@ impl Source {
 
     fn is_valid(&self) -> bool {
         let s = self.as_str();
-        [".ico", ".png"].iter().all(|ext| !s.ends_with(ext))
+        [".ico", ".png", ".clf", ".sqlite"]
+            .iter()
+            .all(|ext| !s.ends_with(ext))
     }
 }
 
@@ -84,9 +107,18 @@ pub struct Model {
 #[derive(Debug, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct IndexName(pub String);
 
+impl std::fmt::Display for IndexName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", &self.0)
+    }
+}
+
 impl IndexName {
     pub fn from_source(source: &Source) -> IndexName {
         IndexName::from_path(source.get_relative())
+    }
+    pub fn as_str(&self) -> &'_ str {
+        self.0.as_str()
     }
 }
 
@@ -123,7 +155,7 @@ pub struct Report {
 }
 
 impl Index {
-    #[tracing::instrument(name = "Index::train", skip(index))]
+    #[tracing::instrument(level = "debug", name = "Index::train", skip(index))]
     pub fn train(sources: &[Source], mut index: ChunkIndex) -> Result<Index> {
         let start_time = Instant::now();
         let mut trainer = process::ChunkTrainer::new(&mut index);
@@ -140,11 +172,12 @@ impl Index {
         Ok(Index { train_time, index })
     }
 
-    #[tracing::instrument(name = "Index::inspect", skip(self))]
+    #[tracing::instrument(level = "debug", name = "Index::inspect", skip(self))]
     pub fn inspect<'a>(
         &'a self,
         source: Source,
     ) -> Box<dyn Iterator<Item = Result<AnomalyContext>> + 'a> {
+        tracing::info!("Inspecting {}", source);
         match source {
             Source::Local(_, path_buf) => match Source::file_open(path_buf.as_path()) {
                 Ok(fp) => Box::new(process::ChunkProcessor::new(fp, &self.index)),
@@ -163,7 +196,7 @@ impl Index {
 
 impl Content {
     /// Apply convertion rules to convert the user Input to Content.
-    #[tracing::instrument]
+    #[tracing::instrument(level = "debug")]
     pub fn from_input(input: Input) -> Result<Content> {
         match input {
             Input::Path(path_str) => Content::from_path(Path::new(&path_str)),
@@ -174,7 +207,7 @@ impl Content {
     }
 
     /// Discover the baselines for this Content.
-    #[tracing::instrument]
+    #[tracing::instrument(level = "debug")]
     pub fn discover_baselines(&self) -> Result<Baselines> {
         (match self {
             Content::File(src) => match src {
@@ -197,7 +230,7 @@ impl Content {
     }
 
     /// Get the sources of log lines for this Content.
-    #[tracing::instrument]
+    #[tracing::instrument(level = "debug")]
     pub fn get_sources(&self) -> Result<Vec<Source>> {
         self.get_sources_iter()
             .filter(|source| {
@@ -240,11 +273,16 @@ impl Content {
 
 impl Model {
     /// Create a Model from baselines.
-    #[tracing::instrument(skip(mk_index))]
+    #[tracing::instrument(level = "debug", skip(mk_index))]
     pub fn train(baselines: Baselines, mk_index: fn() -> ChunkIndex) -> Result<Model> {
         let created_at = SystemTime::now();
         let mut indexes = HashMap::new();
         for (index_name, sources) in Content::group_sources(&baselines)?.drain() {
+            tracing::info!(
+                "Loading index {} with {}",
+                index_name,
+                sources.iter().format(", ").to_string(),
+            );
             let index = Index::train(&sources, mk_index())?;
             indexes.insert(index_name, index);
         }
@@ -256,6 +294,7 @@ impl Model {
     }
 
     pub fn load(path: &Path) -> Result<Model> {
+        info!(path = path.to_str(), "Loading provided model");
         bincode::deserialize_from(flate2::read::GzDecoder::new(
             std::fs::File::open(path).context("Can't open file")?,
         ))
@@ -263,6 +302,7 @@ impl Model {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
+        info!(path = path.to_str(), "Saving model");
         bincode::serialize_into(
             flate2::write::GzEncoder::new(
                 std::fs::File::create(path).context("Can't create file")?,
@@ -280,7 +320,7 @@ impl Model {
     }
 
     /// Create the final report.
-    #[tracing::instrument]
+    #[tracing::instrument(level = "debug")]
     pub fn report(&self, target: &Content) -> Result<Report> {
         let created_at = SystemTime::now();
         let mut targets = Vec::new();

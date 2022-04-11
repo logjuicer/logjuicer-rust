@@ -89,19 +89,50 @@ impl Cli {
 }
 
 fn main() -> Result<()> {
-    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-    tracing_subscriber::Registry::default()
-        .with(tracing_subscriber::EnvFilter::from_default_env())
-        .with(
-            tracing_tree::HierarchicalLayer::new(2)
-                .with_targets(true)
-                .with_bracketed_fields(true),
-        )
-        .init();
+    use std::str::FromStr;
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, Layer};
+
+    let logger = tracing_subscriber::Registry::default();
+
+    let _flush = match std::env::var("LOGREDUCE_LOG") {
+        Err(_) => {
+            // Default INFO stdout logger
+            logger
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_target(false)
+                        .compact()
+                        .with_filter(tracing_subscriber::filter::LevelFilter::INFO),
+                )
+                .init();
+            None
+        }
+        Ok(level) => {
+            // Tracing spans
+            let logger = logger.with(
+                tracing_tree::HierarchicalLayer::new(2)
+                    .with_targets(true)
+                    .with_bracketed_fields(true)
+                    .with_filter(tracing_subscriber::filter::LevelFilter::from_str(&level)?),
+            );
+            if let Ok(fp) = std::env::var("LOGREDUCE_TRACE") {
+                let chrome = tracing_chrome::ChromeLayerBuilder::new()
+                    .file(fp)
+                    .include_args(true)
+                    .build();
+                logger.with(chrome.0).init();
+                // Return the chrome flush guard so that it is not dropped until the end
+                Some(chrome.1)
+            } else {
+                logger.init();
+                None
+            }
+        }
+    };
     Cli::parse().run()
 }
 
-#[tracing::instrument]
+#[tracing::instrument(level = "debug")]
 fn process(
     report: Option<PathBuf>,
     model_path: Option<PathBuf>,
@@ -109,7 +140,6 @@ fn process(
     input: Input,
 ) -> Result<()> {
     // Convert user Input to target Content.
-    tracing::debug!("Discovering content type");
     let content = Content::from_input(input)?;
 
     let model = match model_path {
@@ -119,11 +149,9 @@ fn process(
         },
         _ => {
             // Lookup baselines.
+            tracing::debug!("Finding baselines");
             let baselines = match baselines {
-                None => {
-                    tracing::debug!("Discovering baselines");
-                    content.discover_baselines()
-                }
+                None => content.discover_baselines(),
                 Some(baselines) => baselines
                     .into_iter()
                     .map(Content::from_input)
