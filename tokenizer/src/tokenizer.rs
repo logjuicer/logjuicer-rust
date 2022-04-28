@@ -59,14 +59,6 @@ fn trim_quote_and_punctuation(word: &str) -> &str {
 }
 
 /// Apply global filter to skip specific lines.
-/// ```rust
-/// # use logreduce_tokenizer::{process};
-/// assert_eq!(process("iptables -N RULES42 -L"), "%GL_FILTER");
-/// assert_eq!(process("e2b607f0bb193c9bfed94af532ba1>33 STORED"), "%GL_FILTER");
-/// assert_eq!(process("s/5bf8>28 sending key"), "%GL_FILTER");
-/// assert_eq!(process("^- srcf-ntp.example.edu 2 9 377 429 -358us[ -358us] +/- 63ms"), "%GL_FILTER");
-/// assert_eq!(process("++ echo mswAxrrS1YwyGtIut9Vd"), "%GL_FILTER");
-/// ```
 fn global_filter(line: &str) -> bool {
     lazy_static! {
         static ref RE: Regex = Regex::new(concat!(
@@ -81,30 +73,44 @@ fn global_filter(line: &str) -> bool {
             // memcached logs
             r"|(^[a-f0-9s/]+>[0-9]+ )",
             // shell debugs
-            r"|(^\+\+ echo [^ ]+$)"
+            r"|(^\+\+ echo [^ ]+$)",
+            // key's randomart
+            r#"|(^[ '",]*\|.{17}\|[ '",]*$)"#
         )).unwrap();
     }
     let is_single_word = !line.contains(|c: char| c.is_whitespace());
     is_single_word || RE.is_match(line)
 }
+#[test]
+fn test_global_filter() {
+    assert_eq!(process("iptables -N RULES42 -L"), "%GL_FILTER");
+    assert_eq!(
+        process("e2b607f0bb193c9bfed94af532ba1>33 STORED"),
+        "%GL_FILTER"
+    );
+    assert_eq!(process("s/5bf8>28 sending key"), "%GL_FILTER");
+    assert_eq!(
+        process("^- srcf-ntp.example.edu 2 9 377 429 -358us[ -358us] +/- 63ms"),
+        "%GL_FILTER"
+    );
+    assert_eq!(process("++ echo mswAxrrS1YwyGtIut9Vd"), "%GL_FILTER");
+    assert!(global_filter("|        =+ooo=+.o|"));
+    assert!(global_filter("                    \"|           oo... |\""));
+}
 
 /// Replace numbers sequences with `N`.
-/// ```rust
-/// # use logreduce_tokenizer::*;
-/// tokens_eq!("running test42", "running test43");
-/// ```
 fn remove_numbers(word: &str) -> String {
     lazy_static! {
         static ref RE: Regex = Regex::new("[0-9]+").unwrap();
     }
     RE.replace_all(word, "N").to_string()
 }
+#[test]
+fn test_remove_numbers() {
+    tokens_eq!("running test42", "running test43");
+}
 
 /// Check if a word matches a date.
-/// ```rust
-/// # use logreduce_tokenizer::*;
-/// tokens_eq!("Sunday February 6th - message", "Monday February 7th - message");
-/// ```
 fn is_date(word: &str) -> bool {
     lazy_static! {
         static ref RE: Regex = Regex::new(concat!(
@@ -116,6 +122,13 @@ fn is_date(word: &str) -> bool {
         .unwrap();
     }
     RE.is_match(word)
+}
+#[test]
+fn test_is_date() {
+    tokens_eq!(
+        "Sunday February 6th - message",
+        "Monday February 7th - message"
+    );
 }
 
 /// Check if a word matches an error prefix.
@@ -136,24 +149,18 @@ fn is_error(word: &str) -> bool {
 }
 
 /// Check if a word contains weird char, likely in generated id.
-/// ```rust
-/// # use logreduce_tokenizer::*;
-/// tokens_eq!("A{$@42", "$A%TE");
-/// ```
 fn contains_odd_char(word: &str) -> bool {
     lazy_static! {
         static ref RE: Regex = Regex::new(r"[<>{}%$,*]").unwrap();
     }
     RE.is_match(word)
 }
+#[test]
+fn test_contains_odd_char() {
+    tokens_eq!("A{$@42", "$A%TE");
+}
 
 /// Check if a word only contains hexa and sep char.
-/// ```rust
-/// # use logreduce_tokenizer::*;
-/// tokens_eq!("the_ip is 127.0.0.1", "the_ip is ::1");
-/// tokens_eq!("the_mac is aa:bb:cc", "the_mac is 00:11:cc");
-/// tokens_eq!("the_num is 0x4243", "the_num is 0x4142");
-/// ```
 fn is_uid(word: &str) -> bool {
     lazy_static! {
         static ref RE: Regex =
@@ -161,12 +168,20 @@ fn is_uid(word: &str) -> bool {
     }
     RE.is_match(word)
 }
+#[test]
+fn test_is_uid() {
+    tokens_eq!("the_ip is 127.0.0.1", "the_ip is ::1");
+    tokens_eq!("the_mac is aa:bb:cc", "the_mac is 00:11:cc");
+    tokens_eq!("the_num is 0x4243", "the_num is 0x4142");
+}
 
 /// 3 x 4letters word separated by -
 fn is_uuid(word: &str) -> bool {
     lazy_static! {
         static ref RE: Regex = Regex::new(concat!(
-            "^[a-zA-Z0-9].*-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}-"
+            "^",
+            "[a-zA-Z0-9].*-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}-[a-zA-Z0-9]{4}-",
+            "$"
         ))
         .unwrap();
     }
@@ -197,28 +212,34 @@ fn is_url(word: &str) -> bool {
     RE.is_match(word)
 }
 
-/// ```rust
-/// # use logreduce_tokenizer::*;
-/// tokens_eq!("MqoplXLA2LPnJKTNMQW5JpGyMLJcLxRDDEejzh6b1im8KV/5TRKDsg7b5FwBJJoN", "fJkzOzsJdqxvhSvDFkUlAP7a/+kOBCYi1Yp1pz0v/mHLi0r1z5xtx3BemXVYHbom");
-/// tokens_eq!("a EqTsSXKlOsEjfIdFld+uwopnIIqvKI+Xu6e0RcAGYJEfj56/MG2IdH7/h1JmQ///\\nn2RZ/ocRcL5as2EHQES0b+/I12a2Gj+W+ub0OQAGDq8iL5o8P0/ogEWrpZmoBC+oi",
-///            "a MqoplXLA2LPnJKTNMQW5JpGyMLJcLxRDDEejzh6b1im8KV/5TRKDsg7b5FwBJJoN fJkzOzsJdqxvhSvDFkUlAP7a/+kOBCYi1Yp1pz0v/mHLi0r1z5xtx3BemXVYHbom");
-/// ```
 fn is_base64(word: &str) -> bool {
     lazy_static! {
         static ref RE: Regex = Regex::new(concat!("^", "[A-Za-z0-9+/=]+", "$")).unwrap();
     }
     word.ends_with("==") || (word.len() > 24 && RE.is_match(word))
 }
+#[test]
+fn test_is_base64() {
+    tokens_eq!(
+        "MqoplXLA2LPnJKTNMQW5JpGyMLJcLxRDDEejzh6b1im8KV/5TRKDsg7b5FwBJJoN",
+        "fJkzOzsJdqxvhSvDFkUlAP7a/+kOBCYi1Yp1pz0v/mHLi0r1z5xtx3BemXVYHbom"
+    );
+    tokens_eq!("a EqTsSXKlOsEjfIdFld+uwopnIIqvKI+Xu6e0RcAGYJEfj56/MG2IdH7/h1JmQ///\\nn2RZ/ocRcL5as2EHQES0b+/I12a2Gj+W+ub0OQAGDq8iL5o8P0/ogEWrpZmoBC+oi",
+            "a MqoplXLA2LPnJKTNMQW5JpGyMLJcLxRDDEejzh6b1im8KV/5TRKDsg7b5FwBJJoN fJkzOzsJdqxvhSvDFkUlAP7a/+kOBCYi1Yp1pz0v/mHLi0r1z5xtx3BemXVYHbom");
+}
 
-/// ```
-/// # use logreduce_tokenizer::*;
-/// tokens_eq!("md5:d41d8cd98f00b204e9800998ecf8427e", "md5:e7b26fc34f528b5b19c4450867b9d597")
-/// ```
 fn is_hash(word: &str) -> bool {
     lazy_static! {
         static ref RE: Regex = Regex::new(concat!("(?i:^", "(hash|sha|md)[0-9]*:", ")")).unwrap();
     }
     RE.is_match(word)
+}
+#[test]
+fn test_is_hash() {
+    tokens_eq!(
+        "md5:d41d8cd98f00b204e9800998ecf8427e",
+        "md5:e7b26fc34f528b5b19c4450867b9d597"
+    )
 }
 
 fn is_refs(word: &str) -> bool {
@@ -228,10 +249,6 @@ fn is_refs(word: &str) -> bool {
     word.starts_with("refs/") || word.starts_with("repos/") || RE.is_match(word)
 }
 
-/// ```
-/// # use logreduce_tokenizer::*;
-/// tokens_eq!("key=01:02:ff", "key=aa:bb:cc")
-/// ```
 // TODO: check for word terminated by `:`, where the value is the next word
 fn is_key_value(word: &str) -> Option<(&str, &str)> {
     match word.split_once(|c| c == '=' || c == ':') {
@@ -244,6 +261,10 @@ fn is_key_value(word: &str) -> Option<(&str, &str)> {
         }
         _ => None,
     }
+}
+#[test]
+fn test_is_key_value() {
+    tokens_eq!("key=01:02:ff", "key=aa:bb:cc")
 }
 
 /// Separate attached words like `DHCPOFFER(ipaddr)` in `DHCPOFFER ipaddr`
@@ -265,7 +286,14 @@ fn is_key_for_id(word: &str) -> bool {
 }
 
 fn is_random_path(word: &str) -> bool {
-    word.contains("tmp/") || word.contains("/tmp")
+    word.contains("tmp/") || word.contains("/tmp") || word.starts_with("tmp")
+}
+#[test]
+fn test_is_random_path() {
+    tokens_eq!(
+        "'_original_basename': 'tmpmh4nrjbd'",
+        "'_original_basename': 'tmp7v726n_c'"
+    )
 }
 
 #[cfg(test)]
@@ -359,10 +387,6 @@ fn trim_pid(word: &str) -> Option<&str> {
 }
 
 /// Makes error token appears bigger.
-/// ```rust
-/// # use logreduce_tokenizer::*;
-/// assert_eq!(process("Test Fail"), "Test Fail Fail%A Fail%B Fail%C Fail%D");
-/// ```
 fn push_error(word: &str, result: &mut String) {
     // Make the error takes more space
     result.push_str(word);
@@ -375,6 +399,13 @@ fn push_error(word: &str, result: &mut String) {
     result.push_str("%C ");
     result.push_str(word);
     result.push_str("%D");
+}
+#[test]
+fn test_push_error() {
+    assert_eq!(
+        process("Test Fail"),
+        "Test Fail Fail%A Fail%B Fail%C Fail%D"
+    );
 }
 
 /// The tokenizer main (recursive) function
@@ -647,7 +678,7 @@ mod tests {
     fn test_process_amqp() {
         assert_eq!(
             process("closing AMQP connection <0.4375.0> ([fd00:fd00:fd00:2000::40]:33588 -> [fd00:fd00:fd00:2000::21e]:5672 - nova-compute:8:08b39730-b2e6-4d1f-bcc1-318f9bcfd7c6, vhost: '/', user: 'guest')"),
-            "closing AMQP connection %ID %ID %ID %UID vhost%EQ user%EQ guest"
+            "closing AMQP connection %ID %ID %ID nova- compute%EQ %ID vhost%EQ user%EQ guest"
         );
     }
 
